@@ -24,17 +24,13 @@ if not os.getenv("ANTHROPIC_API_KEY"):
     st.error("Manca ANTHROPIC_API_KEY (mettila in un file .env).")
     st.stop()
 
-# --- inizializzazione: modello + store in memoria (una volta sola) -----------
-@st.cache_resource(show_spinner="Inizializzazione in corso…")
-def _init_app():
-    rag.embedder()                          # carica modello embedding
-    if rag.store_exists(rag.STORE_DIR):     # precarica store strutturati
-        rag.load_store(rag.STORE_DIR)
-    if rag.store_exists(rag.TEXT_STORE_DIR):  # precarica store testo
-        rag.load_store(rag.TEXT_STORE_DIR)
+# --- precarica il modello embedding una volta sola (mostra spinner) ----------
+@st.cache_resource(show_spinner="Caricamento modello embedding…")
+def _load_embedder():
+    rag.embedder()
     return True
 
-_init_app()
+_load_embedder()
 
 # --- Funzioni cache a livello modulo (NON dentro with-block) -----------------
 @st.cache_data(show_spinner=False)
@@ -235,71 +231,49 @@ with tab_qa:
     else:
         q = st.text_input("Fai una domanda sul documento")
         if q:
-            # --- 3-state pattern: garantisce flush UI prima del calcolo ----
-            _prev_q   = st.session_state.get("_qa_q")
-            _qa_state = st.session_state.get("_qa_state", "idle")
+            text, hits, applied_corrections, text_hits = rag.answer(q, k=15, mode=mode)
 
-            if _prev_q != q:
-                # nuova domanda → imposta "loading" e rifai il render
-                st.session_state["_qa_q"]      = q
-                st.session_state["_qa_state"]  = "loading"
-                st.session_state["_qa_result"] = None
-                st.rerun()
+            st.markdown("### Risposta")
+            if applied_corrections:
+                st.info(f"ℹ️ Risposta basata su {len(applied_corrections)} correzione/i verificata/e.")
+            st.write(text)
 
-            if _qa_state == "loading":
-                # questo render arriva al browser PRIMA che parta il calcolo
-                st.info("⏳ Attendere…")
-                st.session_state["_qa_result"] = rag.answer(q, k=15, mode=mode)
-                st.session_state["_qa_state"]  = "done"
-                st.rerun()
+            # --- widget correzione ---
+            with st.expander("✏️ Risposta non corretta? Inserisci la versione giusta"):
+                correction_text = st.text_area(
+                    "Correzione:",
+                    placeholder="Es: La durata di conservazione del manzo a 0°C è circa 35 giorni, non 20.",
+                    key=f"corr_input_{q}",
+                )
+                if st.button("Salva correzione", key=f"corr_save_{q}"):
+                    if correction_text.strip():
+                        rag.save_correction(q, correction_text.strip())
+                        st.success("Correzione salvata. Sarà usata nelle risposte future.")
+                    else:
+                        st.warning("Inserisci il testo della correzione prima di salvare.")
 
-            if _qa_state == "done":
-                text, hits, applied_corrections, text_hits = st.session_state["_qa_result"]
-
-                st.markdown("### Risposta")
-                if applied_corrections:
-                    st.info(f"ℹ️ Risposta basata su {len(applied_corrections)} correzione/i verificata/e.")
-                st.write(text)
-
-                # --- widget correzione ---
-                with st.expander("✏️ Risposta non corretta? Inserisci la versione giusta"):
-                    correction_text = st.text_area(
-                        "Correzione:",
-                        placeholder="Es: La durata di conservazione del manzo a 0°C è circa 35 giorni, non 20.",
-                        key=f"corr_input_{q}",
-                    )
-                    if st.button("Salva correzione", key=f"corr_save_{q}"):
-                        if correction_text.strip():
-                            rag.save_correction(q, correction_text.strip())
-                            st.success("Correzione salvata. Sarà usata nelle risposte future.")
-                        else:
-                            st.warning("Inserisci il testo della correzione prima di salvare.")
-
-                # --- debug fonti ---
-                st.markdown("### Fonti recuperate (debug)")
-                if hits:
-                    st.caption("Elementi strutturati")
-                    for h, score in hits:
-                        with st.expander(f"[{h['type']}] {h['source']} p.{h['page']} — score {score:.3f}"):
-                            st.text(h["content"])
-                if text_hits:
-                    st.caption("Testo")
-                    for h, score in text_hits:
-                        with st.expander(f"[text] {h['source']} p.{h['page']} — score {score:.3f}"):
-                            st.text(h["content"])
+            # --- debug fonti ---
+            st.markdown("### Fonti recuperate (debug)")
+            if hits:
+                st.caption("Elementi strutturati")
+                for h, score in hits:
+                    with st.expander(f"[{h['type']}] {h['source']} p.{h['page']} — score {score:.3f}"):
+                        st.text(h["content"])
+            if text_hits:
+                st.caption("Testo")
+                for h, score in text_hits:
+                    with st.expander(f"[text] {h['source']} p.{h['page']} — score {score:.3f}"):
+                        st.text(h["content"])
 
 
 # ===== TAB 3: Guida ===========================================================
 with tab_help:
-    _guide_slot = st.empty()
-    _guide_slot.info("⏳ Attendere…")
     _guide_candidates = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "user_guide.md"),
         os.path.join(os.getcwd(), "docs", "user_guide.md"),
         "docs/user_guide.md",
     ]
     _guide_path = next((p for p in _guide_candidates if os.path.exists(p)), None)
-    _guide_slot.empty()
     if _guide_path:
         with open(_guide_path, encoding="utf-8") as _f:
             _md = _f.read()
