@@ -8,7 +8,7 @@ Tab 1 – Elementi indicizzati (dryrun):
          Nessuna chiamata API: legge solo store/chunks.json.
 Tab 2 – Domande: Q&A con debug dei chunk recuperati.
 """
-import os, json, re, tempfile
+import os, json, re
 from collections import defaultdict, OrderedDict
 from dotenv import load_dotenv
 import streamlit as st
@@ -46,22 +46,8 @@ def _store_counts(store_dir):
     return counts
 
 
-# --- Sidebar: ingestion -------------------------------------------------------
+# --- Sidebar: riepilogo store -------------------------------------------------
 with st.sidebar:
-    st.header("Ingestion")
-    pdf = st.file_uploader("Carica un PDF tecnico", type="pdf")
-    if pdf and st.button("Indicizza"):
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            f.write(pdf.read())
-            path = f.name
-        with st.spinner("Analisi pagine con visione (può richiedere un po')..."):
-            import ingest as _ingest
-            _ingest.ingest(path)
-        _store_counts.clear()   # invalida cache conteggi
-        _load_chunks.clear()    # invalida cache dryrun
-        st.success("Indicizzazione completata.")
-        st.rerun()
-
     sc = _store_counts(STORE_DIR)
     if sc:
         st.caption("Strutturati:")

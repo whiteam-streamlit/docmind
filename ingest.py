@@ -390,6 +390,19 @@ def _process_page(client, png_b64, page_context, page_num, total_pages, source, 
 
 # --- testo da embeddare: description + content --------------------------------
 
+def _load_store_or_empty(store_dir):
+    """Carica store esistente; restituisce ([], []) se non esiste."""
+    import numpy as np
+    json_path = os.path.join(store_dir, "chunks.json")
+    npy_path  = os.path.join(store_dir, "embeddings.npy")
+    if os.path.exists(json_path) and os.path.exists(npy_path):
+        with open(json_path, encoding="utf-8") as f:
+            chunks = json.load(f)
+        vectors = np.load(npy_path)
+        return chunks, vectors
+    return [], []
+
+
 def _embed_text(c: dict) -> str:
     """Testo usato per l'embedding: antepone la description al content
     in modo che termini come 'manzo', 'tabella COP', ecc. pesino di più."""
@@ -452,23 +465,29 @@ def ingest(pdf_path, max_workers=MAX_WORKERS):
         if n:
             _log(f"  {typ:12}: {n}")
 
-    # --- store strutturati ---
+    # --- store strutturati: accumula (rimuove solo i chunk di questo source) ---
     _log("Calcolo embedding strutturati...")
-    vectors = embed([_embed_text(c) for c in all_chunks])
-    save_store(all_chunks, vectors, store_dir=STORE_DIR)
-    _log(f"Store strutturati salvato in {STORE_DIR}/")
+    existing_chunks, existing_vectors = _load_store_or_empty(STORE_DIR)
+    existing_chunks = [c for c in existing_chunks if c.get("source") != source]
+    merged_chunks   = existing_chunks + all_chunks
+    merged_vectors  = embed([_embed_text(c) for c in merged_chunks])
+    save_store(merged_chunks, merged_vectors, store_dir=STORE_DIR)
+    _log(f"Store strutturati: {len(merged_chunks)} chunk totali ({len(all_chunks)} nuovi) → {STORE_DIR}/")
 
-    # --- chunk testuali (da page_context, nessuna API) ---
+    # --- chunk testuali: accumula allo stesso modo ---
     _log("Chunking testo nativo...")
     text_chunks = []
     for pnum, _png, ctx, _img in pages_data:
         text_chunks.extend(split_text_chunks(ctx, source, book, pnum))
-    _log(f"Chunk testuali: {len(text_chunks)}")
+    _log(f"Chunk testuali nuovi: {len(text_chunks)}")
     if text_chunks:
+        ex_text, _ = _load_store_or_empty(TEXT_STORE_DIR)
+        ex_text     = [c for c in ex_text if c.get("source") != source]
+        merged_text = ex_text + text_chunks
         _log("Calcolo embedding testo...")
-        t_vectors = embed([_embed_text(c) for c in text_chunks])
-        save_store(text_chunks, t_vectors, store_dir=TEXT_STORE_DIR)
-        _log(f"Store testo salvato in {TEXT_STORE_DIR}/")
+        t_vectors = embed([_embed_text(c) for c in merged_text])
+        save_store(merged_text, t_vectors, store_dir=TEXT_STORE_DIR)
+        _log(f"Store testo: {len(merged_text)} chunk totali → {TEXT_STORE_DIR}/")
 
     return all_chunks
 
@@ -523,19 +542,14 @@ if __name__ == "__main__":
         print(f"  {p}")
     print()
 
-    all_chunks = []
     for idx, pdf_path in enumerate(pdfs, 1):
         print(f"[{idx}/{len(pdfs)}] {pdf_path}")
-        chunks = ingest(pdf_path, max_workers=workers)
-        all_chunks.extend(chunks)
+        ingest(pdf_path, max_workers=workers)
 
-    if len(pdfs) > 1:
-        print(f"\nTotale chunk strutturati (tutti i PDF): {len(all_chunks)}")
-        for typ in ("table", "figure", "figure_data", "formula"):
-            n = sum(1 for c in all_chunks if c["type"] == typ)
-            if n:
-                print(f"  {typ:12}: {n}")
-        print("Ricalcolo embedding strutturati unificato...")
-        vectors = embed([c["content"] for c in all_chunks])
-        save_store(all_chunks, vectors, store_dir=STORE_DIR)
-        print(f"Store strutturati unificato salvato in {STORE_DIR}/")
+    # riepilogo finale
+    final_chunks, _ = _load_store_or_empty(STORE_DIR)
+    print(f"\nStore finale: {len(final_chunks)} chunk strutturati totali")
+    for typ in ("table", "figure", "figure_data", "formula"):
+        n = sum(1 for c in final_chunks if c["type"] == typ)
+        if n:
+            print(f"  {typ:12}: {n}")
